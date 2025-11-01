@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <title>Donation DApp (Celo Sepolia)</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        max-width: 900px;
+        margin: 30px auto;
+        padding: 10px;
+      }
+      .card {
+        border: 1px solid #ddd;
+        padding: 16px;
+        border-radius: 8px;
+        margin-bottom: 12px;
+      }
+      input,
+      button {
+        padding: 8px 10px;
+        font-size: 16px;
+      }
+      #donors {
+        max-height: 200px;
+        overflow: auto;
+        border-top: 1px dashed #eee;
+        margin-top: 8px;
+        padding-top: 8px;
+      }
+      .small {
+        font-size: 13px;
+        color: #666;
+      }
+    </style>
+    <!-- ethers v6 (UMD) -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.8.0/dist/ethers.umd.min.js"></script>
+  </head>
+  <body>
+    <h2>💛 Simple Donation DApp (Celo Sepolia)</h2>
+    <div class="card">
+      <div>
+        <b>Contract:</b>
+        <span id="contractAddress">0xYourContractAddressHere</span>
+      </div>
+      <div class="small">Network: Celo Sepolia</div>
+    </div>
+
+    <div class="card">
+      <label
+        >Amount (CELO):
+        <input id="amount" type="number" step="0.0001" placeholder="0.1"
+      /></label>
+      <button id="btnDonate">Donate</button>
+      <button id="btnConnect">Connect Wallet</button>
+      <div id="status" class="small"></div>
+    </div>
+
+    <div class="card">
+      <button id="btnGetBalance">Get Contract Balance</button>
+      <div id="balance" class="small">Balance: -</div>
+    </div>
+
+    <div class="card">
+      <button id="btnGetDonors">Load Donors</button>
+      <div id="donors" class="small"></div>
+    </div>
+
+    <div class="card">
+      <button id="btnWithdraw">Withdraw (owner only)</button>
+      <div id="withdrawStatus" class="small"></div>
+    </div>
+
+    <script>
+      (async () => {
+        // --- CONFIG: cập nhật ở đây ---
+        const RPC_URL = "https://forno.celo-sepolia.celo-testnet.org";
+        const CONTRACT_ADDRESS = "0x51165f4c1a141f81865d5b45eeb75d8a02718ccc"; // <-- Thay bằng address contract của bạn
+        // -------------------------------
+
+        // ABI minimal dựa trên contract của bạn
+        const abi = [
+          "function donate() external payable",
+          "function getBalance() external view returns (uint256)",
+          "function getDonors() external view returns (tuple(address addr, uint256 amount)[])",
+          "function withdraw() external",
+          "event DonationReceived(address indexed donor, uint amount)",
+          "event Withdraw(address indexed owner, uint amount)",
+        ];
+
+        // UI elements
+        const btnConnect = document.getElementById("btnConnect");
+        const btnDonate = document.getElementById("btnDonate");
+        const btnGetBalance = document.getElementById("btnGetBalance");
+        const btnGetDonors = document.getElementById("btnGetDonors");
+        const btnWithdraw = document.getElementById("btnWithdraw");
+        const status = document.getElementById("status");
+        const balanceEl = document.getElementById("balance");
+        const donorsEl = document.getElementById("donors");
+        const withdrawStatus = document.getElementById("withdrawStatus");
+        document.getElementById("contractAddress").innerText = CONTRACT_ADDRESS;
+
+        // Provider read-only for queries
+        const provider = new ethers.JsonRpcProvider(RPC_URL);
+
+        // Contract read-only instance
+        const contractRead = new ethers.Contract(
+          CONTRACT_ADDRESS,
+          abi,
+          provider
+        );
+
+        // MetaMask / Signer
+        let signer, contract;
+
+        async function isMetaMaskInstalled() {
+          return typeof window.ethereum !== "undefined";
+        }
+
+        async function connectWallet() {
+          if (!(await isMetaMaskInstalled())) {
+            status.innerText =
+              "Vui lòng cài MetaMask (hoặc Celo Extension) và thêm mạng Celo Sepolia.";
+            return;
+          }
+          try {
+            await window.ethereum.request({ method: "eth_requestAccounts" });
+            const ethProvider = new ethers.BrowserProvider(window.ethereum);
+            signer = await ethProvider.getSigner();
+            const addr = await signer.getAddress();
+            status.innerText = "Connected: " + addr;
+            // create write-contract instance
+            contract = new ethers.Contract(CONTRACT_ADDRESS, abi, signer);
+            // listen to events
+            contract.on("DonationReceived", (donor, amount) => {
+              console.log("DonationReceived", donor, amount.toString());
+              appendDonor(donor, ethers.formatEther(amount));
+            });
+          } catch (err) {
+            console.error(err);
+            status.innerText = "Kết nối thất bại: " + (err.message || err);
+          }
+        }
+
+        btnConnect.onclick = connectWallet;
+
+        async function donate() {
+          const amountVal = document.getElementById("amount").value;
+          if (!amountVal || Number(amountVal) <= 0)
+            return alert("Nhập số CELO muốn donate.");
+          if (!contract) return alert("Chưa kết nối ví. Nhấn Connect Wallet.");
+          try {
+            btnDonate.disabled = true;
+            status.innerText = "Đang gửi giao dịch...";
+            const tx = await contract.donate({
+              value: ethers.parseEther(amountVal),
+            });
+            await tx.wait();
+            status.innerText = `Đã donate ${amountVal} CELO — Tx: ${tx.hash}`;
+            loadBalance();
+            // load donors refresh
+            loadDonors();
+          } catch (err) {
+            console.error(err);
+            status.innerText = "Lỗi khi gửi: " + (err.message || err);
+          } finally {
+            btnDonate.disabled = false;
+          }
+        }
+
+        btnDonate.onclick = donate;
+
+        async function loadBalance() {
+          try {
+            const b = await contractRead.getBalance();
+            balanceEl.innerText = "Balance: " + ethers.formatEther(b) + " CELO";
+          } catch (err) {
+            console.error(err);
+            balanceEl.innerText = "Balance: error";
+          }
+        }
+
+        btnGetBalance.onclick = loadBalance;
+
+        function appendDonor(addr, amount) {
+          const div = document.createElement("div");
+          div.innerText = `${addr} — ${amount} CELO`;
+          donorsEl.prepend(div);
+        }
+
+        async function loadDonors() {
+          donorsEl.innerHTML = "";
+          try {
+            const arr = await contractRead.getDonors();
+            if (!arr || arr.length === 0) {
+              donorsEl.innerText = "(Chưa có donor nào)";
+              return;
+            }
+            // arr is array of tuples {addr, amount}
+            for (let i = arr.length - 1; i >= 0; i--) {
+              const d = arr[i];
+              const addr = d.addr || d[0];
+              const amount = d.amount || d[1];
+              appendDonor(addr, ethers.formatEther(amount));
+            }
+          } catch (err) {
+            console.error(err);
+            donorsEl.innerText = "Lỗi khi load donors";
+          }
+        }
+
+        btnGetDonors.onclick = loadDonors;
+
+        async function withdraw() {
+          if (!contract) return alert("Chưa kết nối ví (owner) để withdraw.");
+          try {
+            btnWithdraw.disabled = true;
+            withdrawStatus.innerText = "Sending withdraw tx...";
+            const tx = await contract.withdraw();
+            await tx.wait();
+            withdrawStatus.innerText = "Withdraw success — Tx: " + tx.hash;
+            loadBalance();
+          } catch (err) {
+            console.error(err);
+            withdrawStatus.innerText =
+              "Withdraw failed: " + (err.message || err);
+          } finally {
+            btnWithdraw.disabled = false;
+          }
+        }
+
+        btnWithdraw.onclick = withdraw;
+
+        // Load initial balance + donors
+        await loadBalance();
+        // optionally load donors initial
+        // await loadDonors();
+      })();
+    </script>
+  </body>
+</html>
